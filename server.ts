@@ -176,7 +176,25 @@ const TRADE_HISTORY_MAX = 200;
 const PENDING_TRADE_META_MAX_AGE_MS = 15 * 60 * 1000;
 
 const PRIVATE_KEY   = process.env.POLYMARKET_PRIVATE_KEY || "";
-const PROXY_ADDRESS = process.env.POLYMARKET_PROXY_ADDRESS || "";
+const PROXY_ADDRESS = process.env.POLYMARKET_PROXY_ADDRESS?.trim() || "";
+let HAS_PROXY = false;
+if (PROXY_ADDRESS) {
+  if (PRIVATE_KEY) {
+    try {
+      const pkAddress = new ethers.Wallet(PRIVATE_KEY).address;
+      HAS_PROXY = pkAddress.toLowerCase() !== PROXY_ADDRESS.toLowerCase();
+      if (!HAS_PROXY) {
+        console.warn("[Auth] PROXY_ADDRESS 与私钥地址相同，按 EOA 处理（不启用 Safe 代理逻辑）");
+      }
+    } catch (err) {
+      HAS_PROXY = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Auth] POLYMARKET_PRIVATE_KEY 无法解析，将仍按代理钱包处理: ${msg}`);
+    }
+  } else {
+    HAS_PROXY = true;
+  }
+}
 const APP_MODE: AppMode = process.env.APP_MODE === "headless" ? "headless" : "full";
 const IS_FULL_MODE = APP_MODE === "full";
 
@@ -482,8 +500,8 @@ function loadCreds(): PolymarketCreds | null {
 }
 
 async function createClobClient(): Promise<ClobClient | null> {
-  const sigType = PROXY_ADDRESS ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA;
-  const funder  = PROXY_ADDRESS || undefined;
+  const sigType = HAS_PROXY ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA;
+  const funder  = HAS_PROXY ? PROXY_ADDRESS : undefined;
   const saved   = loadCreds();
 
   if (saved) {
@@ -1843,7 +1861,7 @@ function resetClaimableState(): void {
 }
 
 async function syncClaimable(options: { clearOnError?: boolean } = {}): Promise<boolean> {
-  if (!PROXY_ADDRESS) {
+  if (!HAS_PROXY) {
     resetClaimableState();
     return false;
   }
@@ -1866,7 +1884,7 @@ async function syncClaimable(options: { clearOnError?: boolean } = {}): Promise<
 }
 
 function scheduleClaimCycle(delayMs = CLAIM_CYCLE_DELAY_MS): void {
-  if (stopped || !PROXY_ADDRESS) {
+  if (stopped || !HAS_PROXY) {
     if (claimCycleTimer) clearTimeout(claimCycleTimer);
     claimCycleTimer = null;
     claimNextCheckAt = 0;
@@ -1908,7 +1926,7 @@ let claimInProgress = false;
 
 async function runClaim(options: { refreshAfter?: boolean } = {}): Promise<{ title: string; txHash?: string; error?: string }[]> {
   const { refreshAfter = true } = options;
-  if (!PROXY_ADDRESS || !PRIVATE_KEY) return [];
+  if (!HAS_PROXY || !PRIVATE_KEY) return [];
   if (claimInProgress) return [];
   if (!claimablePositions.length) return [];
   claimInProgress = true;
@@ -2574,7 +2592,7 @@ app.post("/api/strategy/config", (req, res) => {
 
 // ── REST：Claim 接口 ──────────────────────────────────────────
 app.post("/api/claim", async (_req, res) => {
-  if (!PROXY_ADDRESS || !PRIVATE_KEY) {
+  if (!HAS_PROXY || !PRIVATE_KEY) {
     res.status(500).json({ error: "未配置钱包信息" }); return;
   }
   if (claimInProgress) {
